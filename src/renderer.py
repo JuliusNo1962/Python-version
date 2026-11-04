@@ -3,18 +3,12 @@
 This module loads OBJ meshes, builds transformation matrices, and renders scene
 objects in a Qt-based OpenGL viewport.
 """
-
-from pathlib import Path
 import math
 import time
 import ctypes
 
 import glm
 import numpy as np
-
-from ray import Ray
-from scene import SceneObject
-from mover import Mover
 
 from OpenGL.GL import *
 from OpenGL.GL.shaders import compileProgram, compileShader
@@ -23,39 +17,10 @@ from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtCore import Qt, QTimer, QPoint
 from PySide6.QtGui import QCursor
 
+from ray import Ray
+from mover import Mover
+from part_assets import loadObjFlatShaded  # Compatibility export for existing callers
 
-AXIS_VERTEX_SHADER = """
-#version 330 core
-
-layout (location = 0) in vec3 in_position;
-
-uniform mat4 view;
-uniform mat4 projection;
-
-void main()
-{
-    gl_Position =
-        projection
-        * view
-        * vec4(in_position, 1.0);
-}
-"""
-
-AXIS_FRAGMENT_SHADER = """
-#version 330 core
-
-out vec4 frag_color;
-
-void main()
-{
-    frag_color = vec4(
-        0.8,
-        0.8,
-        0.8,
-        1.0
-    );
-}
-"""
 
 GIZMO_VERTEX_SHADER = """
 #version 330 core
@@ -109,6 +74,39 @@ void main()
 }
 """
 
+AXIS_VERTEX_SHADER = """
+#version 330 core
+
+layout (location = 0) in vec3 in_position;
+
+uniform mat4 view;
+uniform mat4 projection;
+
+void main()
+{
+    gl_Position =
+        projection
+        * view
+        * vec4(in_position, 1.0);
+}
+"""
+
+AXIS_FRAGMENT_SHADER = """
+#version 330 core
+
+out vec4 frag_color;
+
+void main()
+{
+    frag_color = vec4(
+        0.8,
+        0.8,
+        0.8,
+        1.0
+    );
+}
+"""
+
 VERTEX_SHADER = """
 #version 330 core
 
@@ -141,6 +139,7 @@ in vec3 frag_position;
 in vec3 frag_normal;
 
 uniform vec3 camera_position;
+uniform vec3 base_color;
 
 out vec4 frag_color;
 
@@ -159,9 +158,6 @@ void main()
     float brightness =
         min(ambient + diffuse * 0.82, 1.0);
 
-    vec3 base_color =
-        vec3(0.72, 0.76, 0.82);
-
     frag_color =
         vec4(base_color * brightness, 1.0);
 }
@@ -172,16 +168,15 @@ def createAxisLines(
     ,
     tickSize=0.15
 ):
-    """Generate axis and tick line geometry for the scene reference grid.
+    """Generate three world axes with integer-spaced tick marks for GL_LINES.
 
     Args:
-        minimum: Minimum axis coordinate value.
-        maximum: Maximum axis coordinate value.
-        tickSize: Half-length of each axis tick mark.
+        minimum (int): Lowest world-axis coordinate and first integer tick.
+        maximum (int): Highest world-axis coordinate and last integer tick, inclusive.
+        tickSize (float): Half-length of each axis tick in world units.
 
     Returns:
-        numpy.ndarray: Float32 vertex array containing line segments for X, Y,
-        and Z axes.
+        numpy.ndarray: Flat float32 XYZ positions, two vertices per line segment.
     """
     vertices = []
 
@@ -247,170 +242,43 @@ def createAxisLines(
         dtype=np.float32
     )
 
-def loadObjFlatShaded(filename):
-    """Load a Wavefront OBJ file and convert it to flat-shaded OpenGL vertex data.
-
-    Args:
-        filename: Path to the OBJ mesh file.
-
-    Returns:
-        numpy.ndarray: Interleaved position and normal data for each triangle.
-    """
-    positions = []
-    output = []
-
-    with open(
-        filename,
-        "r",
-        encoding="utf-8",
-        errors="ignore"
-    ) as file:
-
-        for line in file:
-            data = line.split()
-
-            if not data:
-                continue
-
-            if data[0] == "v":
-                positions.append(
-                    np.array(
-                        [
-                            float(data[1]),
-                            float(data[2]),
-                            float(data[3]),
-                        ],
-                        dtype=np.float32,
-                    )
-                )
-
-            elif data[0] == "f":
-                indices = []
-
-                for token in data[1:]:
-                    vertex_index = int(
-                        token.split("/")[0]
-                    )
-
-                    if vertex_index < 0:
-                        vertex_index = (
-                            len(positions)
-                            + vertex_index
-                        )
-                    else:
-                        vertex_index -= 1
-
-                    indices.append(
-                        vertex_index
-                    )
-
-                # Convert polygon faces to triangles.
-                for i in range(
-                    1,
-                    len(indices) - 1
-                ):
-                    p0 = positions[
-                        indices[0]
-                    ]
-
-                    p1 = positions[
-                        indices[i]
-                    ]
-
-                    p2 = positions[
-                        indices[i + 1]
-                    ]
-
-                    edge1 = p1 - p0
-                    edge2 = p2 - p0
-
-                    normal = np.cross(
-                        edge1,
-                        edge2
-                    )
-
-                    length = np.linalg.norm(
-                        normal
-                    )
-
-                    if length > 0.0:
-                        normal = (
-                            normal / length
-                        )
-                    else:
-                        normal = np.array(
-                            [0.0, 1.0, 0.0],
-                            dtype=np.float32,
-                        )
-
-                    for point in (
-                        p0,
-                        p1,
-                        p2
-                    ):
-                        output.extend(
-                            [
-                                point[0],
-                                point[1],
-                                point[2],
-                                normal[0],
-                                normal[1],
-                                normal[2],
-                            ]
-                        )
-                
-    positions_array = np.array(positions, dtype=np.float32)
-    local_min = positions_array.min(axis=0)
-    local_max = positions_array.max(axis=0)
-
-    return np.asarray(
-        output,
-        dtype=np.float32,
-    ), local_min, local_max
-
-
 class Camera:
-    """Represents the viewer's position and orientation in the 3D scene. Only tracks position and orientation."""
-
     def __init__(self):
-        """Initialize the camera at a default viewing position.
+        
+        
+        """Initialize camera position and Euler view angles, then compute its viewing
+        basis.
 
-        The camera starts facing down the negative Z axis with a standard world-up
-        vector and recalculates its orientation vectors.
+        Returns:
+            None.
         """
-        # Camera pose state.
         self.position = glm.vec3(
             0.0,
             2.0,
             28.0
         )
 
-        # Euler orientation state.
         self.yaw = -90.0
         self.pitch = 0.0
 
-        # World reference vector used to rebuild the camera basis.
         self.world_up = glm.vec3(
             0.0,
             1.0,
             0.0
         )
 
-        # Initial forward-facing direction.
         self.front = glm.vec3(
             0.0,
             0.0,
             -1.0
         )
 
-        # Initial right-facing direction.
         self.right = glm.vec3(
             1.0,
             0.0,
             0.0
         )
 
-        # Initial up-facing direction.
         self.up = glm.vec3(
             0.0,
             1.0,
@@ -420,10 +288,10 @@ class Camera:
         self.update_vectors()
 
     def update_vectors(self):
-        """Recompute camera direction vectors from yaw and pitch.
+        """Recompute normalized forward, right, and up vectors from yaw/pitch in degrees.
 
-        This updates the front, right, and up vectors used for movement and view
-        matrix construction.
+        Returns:
+            None. Mutates the camera basis.
         """
         yaw = math.radians(
             self.yaw
@@ -443,12 +311,10 @@ class Camera:
             * math.cos(pitch),
         )
 
-        # Refresh the camera basis vectors after orientation changes.
         self.front = glm.normalize(
             front
         )
 
-        # Rebuild the right vector from the updated forward direction.
         self.right = glm.normalize(
             glm.cross(
                 self.front,
@@ -456,7 +322,6 @@ class Camera:
             )
         )
 
-        # Rebuild the up vector from the updated basis.
         self.up = glm.normalize(
             glm.cross(
                 self.right,
@@ -470,24 +335,26 @@ class Camera:
         dy,
         sensitivity=0.12
     ):
-        """Rotate the camera based on mouse movement.
+        """Apply pointer deltas to yaw/pitch, clamp pitch to avoid flipping, and rebuild
+        the basis.
 
         Args:
-            dx: Horizontal mouse movement delta.
-            dy: Vertical mouse movement delta.
-            sensitivity: Mouse sensitivity multiplier.
+            dx (float): Horizontal pointer displacement in pixels.
+            dy (float): Vertical pointer displacement in pixels, positive for upward
+                look.
+            sensitivity (float): Degrees of rotation per pointer pixel.
+
+        Returns:
+            None. Mutates camera angles and vectors.
         """
-        # Apply mouse motion to the persistent yaw state.
         self.yaw += (
             dx * sensitivity
         )
 
-        # Apply mouse motion to the persistent pitch state.
         self.pitch += (
             dy * sensitivity
         )
 
-        # Keep pitch inside the safe range before rebuilding vectors.
         self.pitch = max(
             -89.0,
             min(
@@ -499,10 +366,10 @@ class Camera:
         self.update_vectors()
 
     def view_matrix(self):
-        """Build the OpenGL view matrix for the current camera orientation.
+        """Build the camera's world-to-view transform from position and basis.
 
         Returns:
-            glm.mat4: The camera view matrix used by the scene renderer.
+            glm.mat4: Look-at view matrix.
         """
         return glm.lookAt(
             self.position,
@@ -511,96 +378,73 @@ class Camera:
             self.up,
         )
 
+
     def mouse_ray(self, event, width, height, projection, view):
-        """Creates a ray from global mouse position and casts a ray to projected view location
-        
-        Arguments:
-            event Obj: mouse tracking
-            width integer(i think?): openGl viewport width
-            height integer
-            projection glm.mat4: projection matrix as glm.perspective data
-            view ... : camera view matrix
-        
-        """
-    
-        """
-        projection and view matrices convert numpy.array 
-        O(1) btw
-        """
+        """Unproject a pointer location into a normalized world-space camera ray.
 
-        #Normal device coordinates, so where the mouse is
-        x_ndc = (2.0 * event.position().x() / width) - 1.0
-        y_ndc = 1.0 - (2.0 * event.position().y() / height)
+        Args:
+            event: Qt mouse event with a widget-local position in logical pixels.
+            width: Positive viewport width in logical pixels.
+            height: Positive viewport height in logical pixels.
+            projection: Perspective projection matrix matching the rendered view.
+            view: Camera world-to-view matrix.
 
-
-        #floating types ftw
+        Returns:
+            tuple: Camera origin and normalized direction as glm.vec3 values.
+        """
+        x_ndc = 2.0 * event.position().x() / width - 1.0
+        y_ndc = 1.0 - 2.0 * event.position().y() / height
         clip = np.array([x_ndc, y_ndc, -1.0, 1.0], dtype=np.float32)
-
         inv_projection = np.linalg.inv(np.array(projection, dtype=np.float32))
         near = inv_projection @ clip
         near = near / near[3]
-
         inv_view = np.linalg.inv(np.array(view, dtype=np.float32))
         near_world = inv_view @ near
         near_world = near_world[:3]
-
         origin = self.position
         direction = glm.normalize(glm.vec3(near_world) - origin)
+        return (origin, direction)
 
-        return origin, direction
+
 class OpenGLViewport(QOpenGLWidget):
-    """Qt widget that renders the 3D scene and handles camera interaction.
-
-    Camera interaction here means the user is effectively piloting a first-person
-    camera through the scene. The camera has a position and a local basis
-    (forward/right/up) derived from yaw and pitch, and input changes that basis
-    or the camera's world position.
-
-    Keyboard movement is relative to the current camera orientation:
-    - W/S move along the camera's forward vector
-    - A/D strafe left/right along the camera's right vector
-    - Space/Ctrl move vertically along the world's up vector
-
-    Mouse interaction is used for looking around the scene. While the right mouse
-    button is held, the cursor is recentered inside the widget so the user can
-    drag continuously without the pointer leaving the viewport. Horizontal motion
-    changes yaw and vertical motion changes pitch, producing a look-around feel
-    similar to a free-fly viewer.
-
-    Left-click interaction drives the move gizmo (see mover.Mover): a click first
-    checks whether it landed on one of the selected object's arrows, in which case
-    it starts a drag instead of anything else. While an arrow is grabbed, mouse
-    movement slides the object along that single axis; releasing the button ends
-    the drag. When the mouse isn't dragging an arrow, movement instead just updates
-    which arrow (if any) is hovered, so it can be highlighted before being clicked.
-    """
-
     def __init__(
         self,
         parent=None,
         scene=None,
         
     ):
-        # OpenGL axis helper state.
-        self.axisShader = None
-        self.debugRayShader = None
-        self.axisVAO = None
-        self.axisVBO = None
-        self.axisVertexCount = 0
 
-        # Move-gizmo state: the Mover for the currently selected object (if
-        # any), the object it's attached to, and the gizmo's own shader/VAO/VBO.
+            
+        
+        """Initialize viewport input/camera state and a repaint timer; GPU allocation is
+        deferred until initializeGL.
+
+        Args:
+            parent (widget, optional): Owning Qt or Tk widget; None creates an
+                independent Qt widget.
+            scene (Scene, optional): Scene to display/use; None uses the constructor's
+                empty or unbound default.
+
+        Returns:
+            None.
+        """
         self.mover = None
         self.selectedObject = None
         self.gizmoShader = None
         self.gizmo_vao = None
         self.gizmo_vbo = None
+        self.axisShader = None
+        self.debugRayShader = None
+        self.debug_ray = None
+        self.debug_ray_vao = None
+        self.debug_ray_vbo = None
+        self.axisVAO = None
+        self.axisVBO = None
+        self.axisVertexCount = 0
         super().__init__(
             parent
         )
-        # Mouse recenter guard state.
         self.ignore_center_event = False
-        # Scene reference used during rendering.
         self.scene = scene
 
         self.setFocusPolicy(
@@ -611,35 +455,26 @@ class OpenGLViewport(QOpenGLWidget):
             True
         )
 
-        # Active camera state.
         self.camera = Camera()
 
-        # Keyboard input state.
         self.keys = set()
 
-        # Mouse drag state.
         self.right_mouse_down = False
         self.last_mouse_position = None
 
-        # Main scene shader and generated render-object cache.
         self.shader = None
         self.renderObjects = []
-        self.debug_ray = None
-        self.debug_ray_vao = None
-        self.debug_ray_vbo = None
 
-        # Cached uniform locations for the main shader.
+
         self.model_location = None
         self.view_location = None
         self.projection_location = None
         self.camera_location = None
 
-        # Frame timing state.
         self.last_time = (
             time.perf_counter()
         )
 
-        # Repaint timer used to drive continuous updates.
         self.timer = QTimer(
             self
         )
@@ -656,9 +491,17 @@ class OpenGLViewport(QOpenGLWidget):
     # ---------------------------------------------------------
     # OPENGL SETUP
     # ---------------------------------------------------------
+
             
     def clearRenderObjects(self):
-        """Delete all OpenGL vertex buffers and arrays belonging to scene objects."""
+        """Acquire the GL context, delete all uploaded object VAOs/VBOs, clear render
+        records, and repaint.
+
+        Returns:
+            None. Leaves the CPU scene and axis resources intact.
+        """
+        self.mover = None
+        self.selectedObject = None
         self.makeCurrent()
 
         for renderObject in self.renderObjects:
@@ -680,113 +523,119 @@ class OpenGLViewport(QOpenGLWidget):
                 [vbo]
             )
 
-        # Clear the cached render-object list after GPU resources are released.
         self.renderObjects.clear()
 
         self.doneCurrent()
 
         self.update()
         
-    def addNewObject(self, object):
-
-        """Load a SceneObject mesh into GPU memory and add it to the viewport.
+    def removeObject(self, sceneObject):
+        """Release uploaded buffers for an instance using the current widget context and
+        remove its render records.
 
         Args:
-            object: SceneObject instance whose mesh should be uploaded.
+            sceneObject (SceneObject): Instance to display, remove, or edit.
 
-        Raises:
-            FileNotFoundError: If the OBJ file does not exist.
+        Returns:
+            None. Leaves the CPU scene list unchanged and schedules a repaint.
         """
-        meshPath = Path(
-            object.meshPath
-        )
-        self.makeCurrent()
-        
-        if not meshPath.exists():
-            self.doneCurrent()
-            raise FileNotFoundError(
+        if self.selectedObject is sceneObject:
+            self.mover = None
+            self.selectedObject = None
+        removed = [obj for obj in self.renderObjects if obj["SceneObject"] is sceneObject]
+        if removed:
+            self.makeCurrent()
+            try:
+                for obj in removed:
+                    glDeleteVertexArrays(1, [obj["vao"]])
+                    glDeleteBuffers(1, [obj["vbo"]])
+                    self.renderObjects.remove(obj)
+            finally:
+                self.doneCurrent()
+        self.update()
 
-                f"Could not find OBJ at {meshPath}"
-            )
+    def _uploadObject(self, sceneObject):
+        """Upload validated CPU position/normal data and append a VAO/VBO render record.
+        The caller must own a current OpenGL context.
 
+        Args:
+            sceneObject (SceneObject): Instance to display, remove, or edit.
 
-        vertexData, local_min, local_max = loadObjFlatShaded(meshPath)
-        object.localMin = local_min
-        object.localMax = local_max
-
-        vertexCount = (
-            len(vertexData) // 6
-        )
-
-        print(
-            f"Loaded {vertexCount:,} vertices for {object.name}"
-        )
-
+        Returns:
+            None. Allocates GPU resources; partial allocations are released if setup
+            fails.
+        """
+        vertexData = sceneObject.asset.vertices
+        points = vertexData.reshape(-1, 6)[:, :3]
+        sceneObject.localMin = points.min(axis=0)
+        sceneObject.localMax = points.max(axis=0)
         vao = glGenVertexArrays(1)
-
-        glBindVertexArray(
-            vao
-        )
-
         vbo = glGenBuffers(1)
-
-        glBindBuffer(
-            GL_ARRAY_BUFFER,
-            vbo
-        )
-        glBufferData(
-            GL_ARRAY_BUFFER,
-            vertexData.nbytes,
-            vertexData,
-            GL_STATIC_DRAW,
-        )
-
-        stride = (
-            6 * vertexData.itemsize
-        )
-        
-        glEnableVertexAttribArray(
-            0
-        )
-        glVertexAttribPointer(
-            0,
-            3,
-            GL_FLOAT,
-            GL_FALSE,
-            stride,
-            ctypes.c_void_p(0)
-        )
-
-        # Normal 
-        glEnableVertexAttribArray(1)
-        
-        glVertexAttribPointer(
-            1,
-            3,
-            GL_FLOAT,
-            GL_FALSE,
-            stride,
-            ctypes.c_void_p(
-                3 * vertexData.itemsize
-            )
-        )
-
-        glBindVertexArray(0)
+        try:
+            glBindVertexArray(vao)
+            glBindBuffer(GL_ARRAY_BUFFER, vbo)
+            glBufferData(GL_ARRAY_BUFFER, vertexData.nbytes, vertexData, GL_STATIC_DRAW)
+            stride = 6 * vertexData.itemsize
+            for location, offset in ((0, 0), (1, 3 * vertexData.itemsize)):
+                glEnableVertexAttribArray(location)
+                glVertexAttribPointer(location, 3, GL_FLOAT, GL_FALSE, stride,
+                                      ctypes.c_void_p(offset))
+            glBindVertexArray(0)
+        except Exception:
+            glDeleteBuffers(1, [vbo])
+            glDeleteVertexArrays(1, [vao])
+            raise
         self.renderObjects.append({
-            "SceneObject": object,
-            "vao": vao,
-            "vbo": vbo,
-            "vertexCount": vertexCount
+            "SceneObject": sceneObject, "vao": vao, "vbo": vbo,
+            "vertexCount": len(vertexData) // 6,
         })
-        
-        self.doneCurrent()
-        self.update()   
-   
-    def initializeGL(self):
-        """Initialize OpenGL state, shaders, and scene buffers.
+        print(f"Loaded {len(vertexData) // 6:,} vertices for {sceneObject.name}")
 
-        This method compiles the shader programs, configures depth buffering, and
-        uploads the axis and scene meshes for rendering.
+    def addNewObject(self, sceneObject):
+        """Acquire the viewport's GL context, upload one instance, then schedule repaint.
+
+        Args:
+            sceneObject (SceneObject): Instance to display, remove, or edit.
+
+        Returns:
+            None. Adds GPU render records without adding the instance to the scene list.
+        """
+        self.makeCurrent()
+        try:
+            self._uploadObject(sceneObject)
+        finally:
+            self.doneCurrent()
+        self.update()
+
+    def frameObject(self, sceneObject):
+        """Position the camera around scaled/translated local mesh bounds so SI-sized
+        assets are visible without resizing them. Bounds do not include instance
+        rotation.
+
+        Args:
+            sceneObject (SceneObject): Instance to display, remove, or edit.
+
+        Returns:
+            None. Updates camera position/orientation and repaints.
+        """
+        points = sceneObject.asset.vertices.reshape(-1, 6)[:, :3]
+        low, high = points.min(axis=0), points.max(axis=0)
+        center = (low + high) / 2 * np.asarray(sceneObject.scale)
+        radius = float(np.linalg.norm((high-low) * np.asarray(sceneObject.scale))) / 2
+        distance = max(0.5, radius * 3)
+        target = glm.vec3(*(center + np.asarray(sceneObject.position)))
+        self.camera.position = target + glm.vec3(0, distance * 0.35, distance)
+        self.camera.yaw = -90.0
+        self.camera.pitch = -math.degrees(math.atan(0.35))
+        self.camera.update_vectors()
+        self.update()
+
+    def initializeGL(self):
+        """Enable depth testing, compile shaders, create axis buffers, and upload existing
+        scene assets under Qt's current GL context.
+
+        Returns:
+            None. Initializes GPU handles and cached uniform locations.
         """
         print(
             "initializeGL called"
@@ -810,7 +659,6 @@ class OpenGLViewport(QOpenGLWidget):
             GL_DEPTH_TEST
         )
 
-        # Compile and cache the main scene shader.
         self.shader = compileProgram(
             compileShader(
                 VERTEX_SHADER,
@@ -822,7 +670,6 @@ class OpenGLViewport(QOpenGLWidget):
             ),
         )
         
-        # Compile and cache the axis helper shader.
         self.axisShader = compileProgram(
             compileShader(
                 AXIS_VERTEX_SHADER,
@@ -834,24 +681,6 @@ class OpenGLViewport(QOpenGLWidget):
             ),
         )
 
-        self.debugRayShader = compileProgram(
-            compileShader(
-                DEBUG_RAY_VERTEX_SHADER,
-                GL_VERTEX_SHADER
-            ),
-            compileShader(
-                DEBUG_RAY_FRAGMENT_SHADER,
-                GL_FRAGMENT_SHADER
-            ),
-        )
-
-        # Compile and cache the move-gizmo shader.
-        self.gizmoShader = compileProgram(
-            compileShader(GIZMO_VERTEX_SHADER, GL_VERTEX_SHADER),
-            compileShader(GIZMO_FRAGMENT_SHADER, GL_FRAGMENT_SHADER),
-        )
-
-        # Cache the main shader uniform locations.
         self.model_location = (
             glGetUniformLocation(
                 self.shader,
@@ -859,7 +688,6 @@ class OpenGLViewport(QOpenGLWidget):
             )
         )
 
-        # Cache the view matrix uniform location.
         self.view_location = (
             glGetUniformLocation(
                 self.shader,
@@ -867,7 +695,6 @@ class OpenGLViewport(QOpenGLWidget):
             )
         )
 
-        # Cache the projection matrix uniform location.
         self.projection_location = (
             glGetUniformLocation(
                 self.shader,
@@ -875,7 +702,6 @@ class OpenGLViewport(QOpenGLWidget):
             )
         )
 
-        # Cache the camera position uniform location.
         self.camera_location = (
             glGetUniformLocation(
                 self.shader,
@@ -883,9 +709,10 @@ class OpenGLViewport(QOpenGLWidget):
             )
         )
 
+        self.color_location = glGetUniformLocation(self.shader, "base_color")
+
         axisData = createAxisLines(-2000,2000)
         
-        # Cache the generated axis geometry state.
         self.axisVertexCount  = len(axisData) // 3
         self.axisVAO = glGenVertexArrays(1)
         glBindVertexArray(
@@ -925,111 +752,44 @@ class OpenGLViewport(QOpenGLWidget):
             0
         )
 
-        if self.debug_ray_vao is None:
-            self.debug_ray_vao = glGenVertexArrays(1)
-            self.debug_ray_vbo = glGenBuffers(1)
-
-        # Gizmo geometry changes every frame (it moves with the selected
-        # object), so only the VAO/VBO handles are created once here — their
-        # contents get re-uploaded in paintGL via GL_DYNAMIC_DRAW.
-        if self.gizmo_vao is None:
-            self.gizmo_vao = glGenVertexArrays(1)
-            self.gizmo_vbo = glGenBuffers(1)
-
         if self.scene is not None:
             for sceneObject in self.scene.objects:
-                
-                meshPath = Path(sceneObject.meshPath)
-                
-                if not meshPath.exists():
-                    raise FileNotFoundError(
-                        f"Could not find OBJ at {meshPath}"
-                    )
-                    continue 
-                
-                vertexData, local_min, local_max = loadObjFlatShaded(meshPath)
-                sceneObject.localMin = local_min
-                sceneObject.localMax = local_max
-                
-                vertexCount = (
-                    len(vertexData) // 6
-                )
-                
-                print(
-                    f"Loaded {vertexCount:,} vertices for {sceneObject.name}"
-                )
-                vao = glGenVertexArrays(1)
-                
-                glBindVertexArray(vao)
-                
-                vbo = glGenBuffers(1)
-                
-                glBindBuffer(
-                    GL_ARRAY_BUFFER,
-                    vbo
-                )
-                glBufferData(
-                    GL_ARRAY_BUFFER,
-                    vertexData.nbytes,
-                    vertexData,
-                    GL_STATIC_DRAW,
-                )
-                
-                stride = (
-                    6 * vertexData.itemsize
-                    
-                )
-                glEnableVertexAttribArray(
-                    0
-                )
-
-                glVertexAttribPointer(
-                    0,
-                    3,
-                    GL_FLOAT,
-                    GL_FALSE,
-                    stride,
-                    ctypes.c_void_p(0)
-                )
-                glEnableVertexAttribArray(1)
-                
-                
-                glVertexAttribPointer(
-                    1,
-                    3,
-                    GL_FLOAT,
-                    GL_FALSE,
-                    stride,
-                    ctypes.c_void_p(
-                        3*vertexData.itemsize
-                    )
-                    )
-                
-                glBindVertexArray(0)
-                
-                # Cache the GPU-backed render object for later drawing and cleanup.
-                self.renderObjects.append({
-                    "SceneObject": sceneObject,
-                    "vao": vao,
-                    "vbo": vbo,
-                    "vertexCount": vertexCount
-                }   
-                )
+                self._uploadObject(sceneObject)
 
         print(
             "OpenGL viewport initialized"
         )
-    
+
+        self.debugRayShader = compileProgram(
+            compileShader(DEBUG_RAY_VERTEX_SHADER, GL_VERTEX_SHADER),
+            compileShader(DEBUG_RAY_FRAGMENT_SHADER, GL_FRAGMENT_SHADER),
+        )
+        if self.debug_ray_vao is None:
+            self.debug_ray_vao = glGenVertexArrays(1)
+            self.debug_ray_vbo = glGenBuffers(1)
+
+        self.gizmoShader = compileProgram(
+            compileShader(GIZMO_VERTEX_SHADER, GL_VERTEX_SHADER),
+            compileShader(GIZMO_FRAGMENT_SHADER, GL_FRAGMENT_SHADER),
+        )
+        if self.gizmo_vao is None:
+            self.gizmo_vao = glGenVertexArrays(1)
+            self.gizmo_vbo = glGenBuffers(1)
+        
+
     def resizeGL(
         self,
         width,
         height
     ):
-        """Handle resize events and update the OpenGL viewport size.
+        """Set the physical-pixel GL viewport using the widget's device-pixel ratio.
 
         Args:
-            width: New viewport width.
-            height: New viewport height.
+            width (int): Widget/window width in logical pixels.
+            height (int): Widget/window height in logical pixels.
+
+        Returns:
+            None. Updates GL viewport dimensions with a minimum of one pixel.
         """
         ratio = (
             self.devicePixelRatioF()
@@ -1059,24 +819,21 @@ class OpenGLViewport(QOpenGLWidget):
     # ---------------------------------------------------------
 
     def paintGL(self):
-        """Render one frame of the 3D scene.
+        """Update camera movement, clear buffers, and draw axes and uploaded triangles
+        using current instance transforms and colors.
 
-        This method updates the camera, clears the framebuffer, calculates the
-        projection and view matrices, and draws the axis helper, scene objects,
-        and - when an object is selected - the move gizmo on top of everything
-        else.
+        Returns:
+            None. Draws one frame; geometry remains in static GPU buffers.
         """
         current_time = (
             time.perf_counter()
         )
 
-        # Update the frame timer state before camera motion is applied.
         delta_time = (
             current_time
             - self.last_time
         )
 
-        # Store the current frame time for the next update.
         self.last_time = (
             current_time
         )
@@ -1201,24 +958,6 @@ class OpenGLViewport(QOpenGLWidget):
             0
         )
 
-        if self.debug_ray is not None:
-            glUseProgram(self.debugRayShader)
-
-            debugViewLocation = glGetUniformLocation(self.debugRayShader, "view")
-            debugProjectionLocation = glGetUniformLocation(self.debugRayShader, "projection")
-
-            glUniformMatrix4fv(debugViewLocation, 1, GL_FALSE, glm.value_ptr(view))
-            glUniformMatrix4fv(debugProjectionLocation, 1, GL_FALSE, glm.value_ptr(projection))
-
-            glBindVertexArray(self.debug_ray_vao)
-            glBindBuffer(GL_ARRAY_BUFFER, self.debug_ray_vbo)
-            glBufferData(GL_ARRAY_BUFFER, self.debug_ray.nbytes, self.debug_ray, GL_DYNAMIC_DRAW)
-            glEnableVertexAttribArray(0)
-            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * self.debug_ray.itemsize, ctypes.c_void_p(0))
-            glDrawArrays(GL_LINES, 0, 2)
-            glBindVertexArray(0)
-            glUseProgram(0)
-
         # ---------------------------------------------------------
         # DRAW SCENE OBJECTS
         # ---------------------------------------------------------
@@ -1259,6 +998,8 @@ class OpenGLViewport(QOpenGLWidget):
                     "SceneObject"
                 ]
             )
+
+            glUniform3f(self.color_location, *sceneObject.asset.color)
 
             model = glm.mat4(
                 1.0
@@ -1347,49 +1088,46 @@ class OpenGLViewport(QOpenGLWidget):
             0
         )
 
-        # ---------------------------------------------------------
-        # DRAW GIZMO
-        # ---------------------------------------------------------
+        if self.debug_ray is not None:
+            glUseProgram(self.debugRayShader)
+            debugViewLocation = glGetUniformLocation(self.debugRayShader, 'view')
+            debugProjectionLocation = glGetUniformLocation(self.debugRayShader, 'projection')
+            glUniformMatrix4fv(debugViewLocation, 1, GL_FALSE, glm.value_ptr(view))
+            glUniformMatrix4fv(debugProjectionLocation, 1, GL_FALSE, glm.value_ptr(projection))
+            glBindVertexArray(self.debug_ray_vao)
+            glBindBuffer(GL_ARRAY_BUFFER, self.debug_ray_vbo)
+            glBufferData(GL_ARRAY_BUFFER, self.debug_ray.nbytes, self.debug_ray, GL_DYNAMIC_DRAW)
+            glEnableVertexAttribArray(0)
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * self.debug_ray.itemsize, ctypes.c_void_p(0))
+            glDrawArrays(GL_LINES, 0, 2)
+            glBindVertexArray(0)
+            glUseProgram(0)
 
         if self.mover is not None:
-            # Rebuild gizmo geometry every frame - it moves whenever the
-            # selected object does (including mid-drag), so it can't be
-            # uploaded once like the static axis grid/scene meshes.
             vertex_data, segments = self.mover.build_render_data()
-
-            # Draw the gizmo without depth testing so it always stays on top
-            # and clickable, even if part of it is behind the mesh it's
-            # attached to. Restored right after so it doesn't affect anything
-            # drawn later this frame or the next.
             glDisable(GL_DEPTH_TEST)
             glUseProgram(self.gizmoShader)
-
-            gizmoViewLocation = glGetUniformLocation(self.gizmoShader, "view")
-            gizmoProjectionLocation = glGetUniformLocation(self.gizmoShader, "projection")
-            gizmoColorLocation = glGetUniformLocation(self.gizmoShader, "color")
-
+            gizmoViewLocation = glGetUniformLocation(self.gizmoShader, 'view')
+            gizmoProjectionLocation = glGetUniformLocation(self.gizmoShader, 'projection')
+            gizmoColorLocation = glGetUniformLocation(self.gizmoShader, 'color')
             glUniformMatrix4fv(gizmoViewLocation, 1, GL_FALSE, glm.value_ptr(view))
             glUniformMatrix4fv(gizmoProjectionLocation, 1, GL_FALSE, glm.value_ptr(projection))
-
             glBindVertexArray(self.gizmo_vao)
             glBindBuffer(GL_ARRAY_BUFFER, self.gizmo_vbo)
             glBufferData(GL_ARRAY_BUFFER, vertex_data.nbytes, vertex_data, GL_DYNAMIC_DRAW)
-
             glEnableVertexAttribArray(0)
             glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * vertex_data.itemsize, ctypes.c_void_p(0))
-
-            # One draw call per axis, out of the single shared buffer, so
-            # each arrow can get its own color (and brighten when hovered).
             for name, color, start_vertex, vertex_count in segments:
                 r, g, b = color
                 if name == self.mover.hovered_axis:
-                    r, g, b = min(r + 0.3, 1.0), min(g + 0.3, 1.0), min(b + 0.3, 1.0)
+                    r, g, b = (min(r + 0.3, 1.0), min(g + 0.3, 1.0), min(b + 0.3, 1.0))
                 glUniform3f(gizmoColorLocation, r, g, b)
                 glDrawArrays(GL_TRIANGLES, start_vertex, vertex_count)
-
             glBindVertexArray(0)
             glUseProgram(0)
             glEnable(GL_DEPTH_TEST)
+
+
 
 
     # ---------------------------------------------------------
@@ -1400,22 +1138,24 @@ class OpenGLViewport(QOpenGLWidget):
         self,
         delta_time
     ):
-        """Apply keyboard-driven camera movement relative to the current view.
-
-        "Camera interaction" in this class is a free-fly camera: the user moves the
-        camera itself through the 3D scene instead of orbiting around a target. The
-        camera's current forward/right/up vectors define the local axes, so motion is
-        always relative to the direction the viewer is facing.
+        """Move and turn the camera from held keys, scaling speeds by elapsed time.
 
         Args:
-            delta_time: Time elapsed since the previous frame.
+            delta_time (float): Elapsed frame time in seconds used to scale movement.
+
+        Returns:
+            None. Updates camera position and viewing basis.
         """
+        turn = int(Qt.Key_Right in self.keys) - int(Qt.Key_Left in self.keys)
+        if turn:
+            self.camera.yaw += turn * 90.0 * delta_time
+            self.camera.update_vectors()
+
         speed = (
             10.0
             * delta_time
         )
 
-        # Move forward/back along the camera's viewing direction.
         if Qt.Key_W in self.keys:
             self.camera.position += (
                 self.camera.front
@@ -1428,7 +1168,6 @@ class OpenGLViewport(QOpenGLWidget):
                 * speed
             )
 
-        # Side-step relative to the camera's local right axis.
         if Qt.Key_D in self.keys:
             self.camera.position += (
                 self.camera.right
@@ -1441,9 +1180,6 @@ class OpenGLViewport(QOpenGLWidget):
                 * speed
             )
 
-        # Vertical movement is independent of the viewing direction and tracks the
-        # scene's world-up axis, which makes it easier to inspect the model from
-        # above or below while still looking around.
         if Qt.Key_Space in self.keys:
             self.camera.position += (
                 self.camera.world_up
@@ -1460,12 +1196,16 @@ class OpenGLViewport(QOpenGLWidget):
         self,
         event
     ):
-        """Track key presses and close the app when Escape is pressed.
+        """Track a pressed key for continuous movement and request window closure on
+        Escape.
 
         Args:
-            event: Qt keyboard event.
+            event (Qt event): Input, paint, resize, focus, or close event delivered by
+                the framework.
+
+        Returns:
+            None. Mutates held-key state.
         """
-        # Add the pressed key to the active input set.
         self.keys.add(
             event.key()
         )
@@ -1480,77 +1220,69 @@ class OpenGLViewport(QOpenGLWidget):
         self,
         event
     ):
-        """Remove a key from the active input set when released.
+        """Remove a released key from held state, ignoring synthetic auto-repeat releases.
 
         Args:
-            event: Qt keyboard event.
+            event (Qt event): Input, paint, resize, focus, or close event delivered by
+                the framework.
+
+        Returns:
+            None.
         """
-        # Remove the released key from the active input set.
+        if event.isAutoRepeat():
+            return
         self.keys.discard(
             event.key()
         )
 
-    def mousePressEvent(self, event):
-        """Grab a gizmo arrow, or start look-around camera control.
-
-        Left-click first casts a ray and checks it against the selected
-        object's gizmo arrows (if any); a hit starts a drag on that axis and
-        nothing else happens this click. Otherwise the click falls through to
-        the (not yet implemented) scene object picking below.
-
-        Right mouse button is unrelated to the gizmo: the user is turning the
-        camera as if looking around from inside the scene, not orbiting an
-        object. Pressing it locks the cursor to the viewport and forces the
-        pointer back to the center on each movement step so continuous
-        dragging feels smooth and stable.
+    def focusOutEvent(self, event):
+        # File dialogs and switching applications can swallow key-up events.
+        """Clear held keys and release mouse capture/cursor hiding when the viewport loses
+        focus.
 
         Args:
-            event: Qt mouse event.
+            event (Qt event): Input, paint, resize, focus, or close event delivered by
+                the framework.
+
+        Returns:
+            None. Delegates the focus event after resetting input state.
+        """
+        self.keys.clear()
+        if self.mover is not None and self.mover.dragging_axis is not None:
+            self.mover.end_drag()
+        if self.right_mouse_down:
+            self.right_mouse_down = False
+            self.ignore_center_event = False
+            self.releaseMouse()
+            self.unsetCursor()
+        super().focusOutEvent(event)
+
+    def mousePressEvent(self, event):
+        """Pick a part or movement arrow on left click; capture mouse look on right click.
+
+        Args:
+            event: Qt mouse event containing the button and logical-pixel position.
+
+        Returns:
+            None. Updates selection/drag state or captures the pointer for mouse look.
         """
         if event.button() == Qt.LeftButton:
-            x = event.position().x()
-            y = event.position().y()
-
-            width = max(1, self.width())
-            height = max(1, self.height())
-
-            projection = glm.perspective(
-                glm.radians(60.0),
-                width / height,
-                0.1,
-                1000.0,
-            )
-
-            view = self.camera.view_matrix()
-
+            width, height = max(1, self.width()), max(1, self.height())
+            projection = glm.perspective(glm.radians(60.0), width / height, 0.1, 1000.0)
             origin, direction = self.camera.mouse_ray(
-                event,
-                width,
-                height,
-                projection,
-                view
+                event, width, height, projection, self.camera.view_matrix()
             )
-
-            # Check the gizmo before anything else - grabbing an arrow should
-            # start a drag, not also re-fire the debug ray or (eventually)
-            # re-pick a different object with the same click.
             if self.mover is not None:
                 axis = self.mover.hit_test(origin, direction)
                 if axis is not None:
                     self.mover.begin_drag(axis, origin, direction)
                     return
-
             ray = self.RenderRay(origin, direction, 100.0)
-
             objects = self.scene.objects if self.scene is not None else []
             hit = ray.checkCollisions(obj for obj in objects if obj.name != "Axis")
-            if hit is not None:
-                self.mover = Mover(hit["object"])
-            else:
-                self.mover = None
-
+            self.selectedObject = hit["object"] if hit is not None else None
+            self.mover = Mover(self.selectedObject) if self.selectedObject is not None else None
             self.update()
-
         elif event.button() == Qt.RightButton:
             self.right_mouse_down = True
             self.setCursor(Qt.BlankCursor)
@@ -1558,70 +1290,53 @@ class OpenGLViewport(QOpenGLWidget):
             self.setFocus()
             self.ignore_center_event = True
             self.center_mouse()
-            
     def mouseReleaseEvent(self, event):
-        """End a gizmo drag, or stop camera look-around control.
-
-        Left-button release ends an in-progress axis drag, if one was
-        happening - without this, dragging_axis would stay set and the next
-        mouse move would keep moving the object even after the button is
-        no longer held.
-
-        Right-button release returns cursor control to the desktop and ends
-        the persistent drag state used for camera yaw/pitch updates.
+        """End a movement-arrow drag or release captured right-button mouse look.
 
         Args:
-            event: Qt mouse event.
+            event (Qt event): Input, paint, resize, focus, or close event delivered by
+                the framework.
+
+        Returns:
+            None.
         """
         if event.button() == Qt.RightButton:
-            # Clear the drag state when rotation ends.
             self.right_mouse_down = False
 
-            # Allow the next mouse move to be processed normally.
             self.ignore_center_event = False
 
             self.releaseMouse()
             self.unsetCursor()
 
-        if event.button() == Qt.LeftButton:
-            if self.mover is not None and self.mover.dragging_axis is not None:
+        if event.button() == Qt.LeftButton and self.mover is not None:
+            if self.mover.dragging_axis is not None:
                 self.mover.end_drag()
             
     def mouseMoveEvent(self, event):
-        """Drag the gizmo, update its hover state, or rotate the camera.
-
-        If a gizmo arrow is currently grabbed (dragging_axis is set), this
-        moves the selected object to follow the mouse along that axis and
-        stops there - the look-around logic below is intentionally skipped
-        while a drag is active. Otherwise, if a gizmo exists, the current
-        mouse ray is checked against its arrows purely to update which one
-        (if any) is hovered, for highlighting.
-
-        Camera look-around is a separate "look around" controller: the cursor
-        delta is translated into yaw and pitch changes on the Camera object,
-        so dragging left/right turns the view horizontally and dragging up/down
-        tilts the view vertically. A recenter step keeps the pointer from
-        reaching the edge of the widget, which would otherwise break the drag
-        experience.
+        """Drag the selected part, update arrow hover, or rotate captured mouse look.
 
         Args:
-            event: Qt mouse move event.
+            event (Qt event): Input, paint, resize, focus, or close event delivered by
+                the framework.
+
+        Returns:
+            None. Updates a selected part and dirty state, or the camera and pointer.
         """
         if self.mover is not None:
-            width = max(1, self.width())
-            height = max(1, self.height())
-
+            width, height = max(1, self.width()), max(1, self.height())
             projection = glm.perspective(glm.radians(60.0), width / height, 0.1, 1000.0)
-            view = self.camera.view_matrix()
-
-            origin, direction = self.camera.mouse_ray(event, width, height, projection, view)
-
+            origin, direction = self.camera.mouse_ray(
+                event, width, height, projection, self.camera.view_matrix()
+            )
             if self.mover.dragging_axis is not None:
+                before = list(self.mover.scene_object.position)
                 self.mover.update_drag(origin, direction)
+                if self.scene is not None and self.mover.scene_object.position != before:
+                    self.scene.dirty = True
+                self.update()
                 return
-
             self.mover.hovered_axis = self.mover.hit_test(origin, direction)
-
+            self.update()
 
         if not self.right_mouse_down:
             return
@@ -1641,7 +1356,6 @@ class OpenGLViewport(QOpenGLWidget):
         # Ignore the artificial mouse event caused
         # by QCursor.setPos().
         if self.ignore_center_event:
-            # Consume the synthetic recentering move event.
             self.ignore_center_event = False
             return
 
@@ -1656,13 +1370,16 @@ class OpenGLViewport(QOpenGLWidget):
             dy
         )
 
-        # Mark the next recentering move event as synthetic.
         self.ignore_center_event = True
 
         self.center_mouse()
         
     def center_mouse(self):
-        """Re-center the system cursor within the viewport to keep drag rotation stable."""
+        """Warp the system pointer to the widget center in global screen coordinates.
+
+        Returns:
+            None. Changes the desktop cursor position.
+        """
         center = self.rect().center()
 
         global_center = self.mapToGlobal(
@@ -1676,9 +1393,21 @@ class OpenGLViewport(QOpenGLWidget):
             global_center
         )
 
+
+
     def RenderRay(self, position, direction, length=100.0):
-        """Queue a debug ray from origin to direction * length for the next paint."""
+        """Queue a world-space ray visualization for the next frame.
+
+        Args:
+            position: World XYZ ray origin in metres.
+            direction: World XYZ direction; camera rays are normalized.
+            length: Distance parameter in metres for a normalized direction.
+
+        Returns:
+            Ray: Queued ray; also updates float32 line data and requests repaint.
+        """
         ray = Ray(position, direction)
         self.debug_ray = ray.render(length)
         self.update()
         return ray
+        

@@ -1,6 +1,13 @@
+Cython
+customtkinter
+numpy
+setuptools
 PySide6
 PyOpenGL
 PyGLM
-numpy
-customtkinter
+manifold3d==3.5.4
+pybullet==3.2.7
 Pillow
+moderngl
+glfw
+PyInstaller>=6,<7

@@ -6,7 +6,15 @@ import numpy as np
 
 @lru_cache(maxsize=32)
 def _loadTriangles(path, modified, size):
-    """Cache OBJ-style meshes; the file stat arguments invalidate edited assets."""
+    """Cache local triangles from OBJ or JSON parts; file stats invalidate edits."""
+    with path.open(encoding="utf-8-sig") as stream:
+        first = stream.read(1)
+        while first and first.isspace():
+            first = stream.read(1)
+    if first in ("{", "["):
+        from part_assets import load_asset
+        vertices = load_asset(path).vertices.reshape(-1, 6)[:, :3]
+        return vertices.astype(np.float64).reshape(-1, 3, 3)
     positions = []
     triangles = []
     with path.open(encoding="utf-8", errors="ignore") as mesh:
@@ -65,7 +73,7 @@ class Ray:
             ],
             dtype=np.float32,
         )
-    
+
     def checkCollisions(self, objects):
         """Return the nearest forward mesh hit, or None when nothing is hit.
 
@@ -92,14 +100,19 @@ class Ray:
 
         nearest = None
         for obj in objects:
-            meshPath = getattr(obj, "meshPath", obj)
-            if meshPath is None:
-                continue
-            path = Path(meshPath).resolve()
-            if path.suffix.lower() not in (".obj", ".simuopart"):
-                raise ValueError(f"Unsupported mesh format: {path.suffix}")
-            stat = path.stat()
-            triangles = _loadTriangles(path, stat.st_mtime_ns, stat.st_size)
+            asset = getattr(obj, "asset", None)
+            if asset is not None:
+                vertices = asset.vertices.reshape(-1, 6)[:, :3]
+                triangles = vertices.astype(np.float64).reshape(-1, 3, 3)
+            else:
+                meshPath = getattr(obj, "meshPath", obj)
+                if meshPath is None:
+                    continue
+                path = Path(meshPath).resolve()
+                if path.suffix.lower() not in (".obj", ".simuopart"):
+                    raise ValueError(f"Unsupported mesh format: {path.suffix}")
+                stat = path.stat()
+                triangles = _loadTriangles(path, stat.st_mtime_ns, stat.st_size)
             if not len(triangles):
                 continue
 
@@ -144,4 +157,3 @@ class Ray:
                     "triangleIndex": int(index),
                 }
         return nearest
-

@@ -1,0 +1,40 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Run SimuO",
+            "type": "process",
+            "command": "${workspaceFolder}/Testing/Tools/run.sh",
+            "windows": {
+                "command": "${workspaceFolder}/.venv/Scripts/python.exe",
+                "args": ["${workspaceFolder}/src/main.py"]
+            },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Build SimuO",
+            "type": "process",
+            "command": "${workspaceFolder}/.venv/bin/python",
+            "windows": {
+                "command": "${workspaceFolder}/.venv/Scripts/python.exe"
+            },
+            "args": [
+                "-m",
+                "PyInstaller",
+                "--noconfirm",
+                "src/main.spec"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": [],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
+        }
+    ]
+}

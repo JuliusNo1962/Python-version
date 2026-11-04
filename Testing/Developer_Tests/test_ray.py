@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 from ray import Ray
 from scene import SceneObject
@@ -33,6 +33,33 @@ class RayCollisionTests(unittest.TestCase):
                 self.assertIsNotNone(hit)
                 np.testing.assert_allclose(hit["point"], [x, y, 2], atol=1e-6)
                 self.assertAlmostEqual(hit["distance"], 3)
+
+    def test_json_parts_are_pickable_as_instances_and_paths(self):
+        for name in ("aluminum_cube", "sketch_plate", "feature_demo"):
+            with self.subTest(name=name):
+                path = ROOT / "Assets" / (name + ".simuOPart")
+                obj = SceneObject(meshPath=path)
+                triangle = obj.asset.vertices.reshape(-1, 3, 6)[0]
+                center = triangle[:, :3].mean(axis=0)
+                normal = triangle[0, 3:]
+                for target, offset in ((path, np.zeros(3)), (obj, np.asarray(obj.position))):
+                    ray = Ray(center + normal * 3 + offset, -normal)
+                    hit = ray.checkCollisions(target)
+                    self.assertIsNotNone(hit)
+                    self.assertIs(hit["object"], target)
+                    self.assertLessEqual(hit["distance"], 3.00001)
+                    np.testing.assert_allclose(hit["point"], ray.at(hit["t"]), atol=1e-5)
+
+    def test_loaded_instance_picking_uses_the_visible_asset_snapshot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "snapshot.simuOPart"
+            path.write_bytes((ROOT / "Assets/aluminum_cube.simuOPart").read_bytes())
+            obj = SceneObject(meshPath=path)
+            obj.position = [0, 0, 0]
+            path.unlink()
+            hit = Ray([0, 0, 2], [0, 0, -1]).checkCollisions(obj)
+            self.assertIs(hit["object"], obj)
+            self.assertAlmostEqual(hit["distance"], 1.9, places=5)
 
     def test_repository_formats(self):
         source = ROOT / "Assets/cube.simuOPart"
