@@ -13,6 +13,7 @@ class ConstraintType(Enum):
     PERPENDICULAR = "perpendicular"
     VERTICAL = "vertical"
     HORIZONTAL = "horizontal"
+    EQUAL = "equal"
 
 
 class Element:
