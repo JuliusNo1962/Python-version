@@ -1,6 +1,6 @@
 import unittest
 
-from src.part import ConstraintType, Element, Face, Line, Part, Vertex
+from src.part_class import ConstraintType, Element, Face, Line, Part, Vertex
 
 
 class ElementTests(unittest.TestCase):
