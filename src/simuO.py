@@ -170,6 +170,7 @@ class SimuOMainWindow(QMainWindow):
 
         self.setCentralWidget(self.viewport)
         self.createTemporaryPartsPanel()
+        self.createDebugPanel()
         self.statusBar().showMessage(
             "Import Part to add a model · Right-drag to look · WASD to move · Help → Controls"
         )
@@ -202,6 +203,23 @@ class SimuOMainWindow(QMainWindow):
         self.addDockWidget(Qt.RightDockWidgetArea, self.temporaryPartsDock)
         self.windowMenu.addAction(self.temporaryPartsDock.toggleViewAction())
         self.temporaryPartsDock.hide()
+    def createDebugPanel(self):
+        """Create a dock showing debug information for the current scene.
+
+        Returns:
+            None. Adds its visibility action to the Window menu.
+        """
+        self.debugDock = QDockWidget("Debug Info", self)
+        panel = QWidget(self)
+        layout = QVBoxLayout(panel)
+        self.debugLabel = QLabel(panel)
+        self.debugLabel.setWordWrap(True)
+        self.debugLabel.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        layout.addWidget(self.debugLabel)
+        self.debugDock.setWidget(panel)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.debugDock)
+        self.windowMenu.addAction(self.debugDock.toggleViewAction())
+        self.debugDock.hide()
 
     def refreshTemporaryParts(self):
         """Repopulate temporary-part names and paths, showing the dock only when copies
