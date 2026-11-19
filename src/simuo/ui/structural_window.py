@@ -135,15 +135,12 @@ class StructuralWindow(QMainWindow):
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self.tree_menu)
         hierarchy_layout.addWidget(self.tree, 1)
-        selection_section = self.selection_section = InspectorSection("Surface Selection")
-        selection_section.toggle.setChecked(False)
-        sl = QVBoxLayout(selection_section.body)
-        self.patch_list = QListWidget()
+        # Keep face selection as internal state for viewport picking and load/support
+        # tools; it no longer needs a duplicate list in the inspector.
+        self.patch_list = QListWidget(self.hierarchy_panel)
+        self.patch_list.hide()
         self.patch_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.patch_list.setMaximumHeight(155)
         self.patch_list.itemSelectionChanged.connect(self.selection_changed)
-        sl.addWidget(self.patch_list)
-        hierarchy_layout.addWidget(selection_section)
         self.properties = QStackedWidget()
         self.properties.setObjectName("editorPanel")
         self.properties.setStyleSheet(load_stylesheet("properties"))
@@ -409,7 +406,6 @@ class StructuralWindow(QMainWindow):
             self.new_load(key)
         elif key in ("clamp", "pinned_face", "fixed_point"):
             self._editing_load = None
-            self.selection_section.toggle.setChecked(key != "fixed_point")
             self.viewport.set_tool(key)
             self.select_item("supports", "")
             self.statusBar().showMessage("Click the solid to place a support. Ctrl-click extends the selected face support.")
@@ -677,7 +673,6 @@ class StructuralWindow(QMainWindow):
             self.statusBar().showMessage("Click the new fixed-point location. Escape exits placement.")
 
     def new_load(self, kind):
-        self.selection_section.toggle.setChecked(kind != "point")
         self._editing_load = None
         self._draft_anchor = None
         self.load_name.clear()

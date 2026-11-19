@@ -1,13 +1,21 @@
 """Structural surface selection, volume-mesh preview and stress lookup texture."""
 import math
+
+import glm
 import numpy as np
-from PySide6.QtCore import Qt, Signal, QRectF, QPointF, QTimer, QElapsedTimer
-from PySide6.QtGui import QMatrix4x4, QVector3D, QPainter, QColor, QLinearGradient, QPen, QCursor, QPolygonF
+from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import (
+    QColor,
+    QLinearGradient,
+    QMatrix4x4,
+    QPainter,
+    QPen,
+    QVector3D,
+)
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtWidgets import QWidget
-import glm
-from simuo.rendering.camera import Camera
 
+from simuo.rendering.camera import Camera
 from simuo.structural.postprocessing import gradient_texture
 
 VERTEX = """
@@ -112,10 +120,29 @@ class StructuralViewport(QOpenGLWidget):
         self.update()
 
     def initializeGL(self):
-        from OpenGL.GL import glGenVertexArrays, glGenBuffers, glGenTextures, glBindTexture, glTexImage2D, glTexParameteri, glPixelStorei
-        from OpenGL.GL import GL_TEXTURE_2D, GL_RGB8, GL_RGB, GL_UNSIGNED_BYTE, GL_TEXTURE_MIN_FILTER, GL_TEXTURE_MAG_FILTER, GL_LINEAR, GL_TEXTURE_WRAP_S, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE, GL_UNPACK_ALIGNMENT
+        from OpenGL.GL import (
+            GL_CLAMP_TO_EDGE,
+            GL_FRAGMENT_SHADER,
+            GL_LINEAR,
+            GL_RGB,
+            GL_RGB8,
+            GL_TEXTURE_2D,
+            GL_TEXTURE_MAG_FILTER,
+            GL_TEXTURE_MIN_FILTER,
+            GL_TEXTURE_WRAP_S,
+            GL_TEXTURE_WRAP_T,
+            GL_UNPACK_ALIGNMENT,
+            GL_UNSIGNED_BYTE,
+            GL_VERTEX_SHADER,
+            glBindTexture,
+            glGenBuffers,
+            glGenTextures,
+            glGenVertexArrays,
+            glPixelStorei,
+            glTexImage2D,
+            glTexParameteri,
+        )
         from OpenGL.GL.shaders import compileProgram, compileShader
-        from OpenGL.GL import GL_VERTEX_SHADER, GL_FRAGMENT_SHADER
         self.program = compileProgram(compileShader(VERTEX, GL_VERTEX_SHADER), compileShader(FRAGMENT, GL_FRAGMENT_SHADER))
         self.vao, self.vbo, self.texture = glGenVertexArrays(1), glGenBuffers(1), glGenTextures(1)
         glBindTexture(GL_TEXTURE_2D, self.texture)
@@ -130,7 +157,12 @@ class StructuralViewport(QOpenGLWidget):
     def cleanup(self):
         if self.program is None:
             return
-        from OpenGL.GL import glDeleteBuffers, glDeleteVertexArrays, glDeleteTextures, glDeleteProgram
+        from OpenGL.GL import (
+            glDeleteBuffers,
+            glDeleteProgram,
+            glDeleteTextures,
+            glDeleteVertexArrays,
+        )
         self.makeCurrent()
         glDeleteBuffers(1, [self.vbo])
         glDeleteVertexArrays(1, [self.vao])
@@ -209,7 +241,17 @@ class StructuralViewport(QOpenGLWidget):
 
     def upload(self):
         import ctypes
-        from OpenGL.GL import glBindVertexArray, glBindBuffer, glBufferData, glEnableVertexAttribArray, glVertexAttribPointer, GL_ARRAY_BUFFER, GL_STATIC_DRAW, GL_FLOAT
+
+        from OpenGL.GL import (
+            GL_ARRAY_BUFFER,
+            GL_FLOAT,
+            GL_STATIC_DRAW,
+            glBindBuffer,
+            glBindVertexArray,
+            glBufferData,
+            glEnableVertexAttribArray,
+            glVertexAttribPointer,
+        )
         if self.geometry is None:
             self.draw_count = 0
             self.line_count = 0
@@ -268,8 +310,35 @@ class StructuralViewport(QOpenGLWidget):
         self.draw_count = len(triangles_data)
 
     def paintGL(self):
-        from OpenGL.GL import glClearColor, glClear, glEnable, glDisable, glUseProgram, glUniformMatrix4fv, glGetUniformLocation, glUniform1i, glBindVertexArray, glDrawArrays, glBindTexture, glPolygonMode, glActiveTexture
-        from OpenGL.GL import GL_COLOR_BUFFER_BIT, GL_DEPTH_BUFFER_BIT, GL_DEPTH_TEST, GL_TEXTURE_2D, GL_TRIANGLES, GL_FRONT_AND_BACK, GL_LINE, GL_FILL, GL_TEXTURE0, GL_LINES, GL_BLEND, GL_SCISSOR_TEST, glColorMask, glDepthMask
+        from OpenGL.GL import (
+            GL_BLEND,
+            GL_COLOR_BUFFER_BIT,
+            GL_DEPTH_BUFFER_BIT,
+            GL_DEPTH_TEST,
+            GL_FILL,
+            GL_FRONT_AND_BACK,
+            GL_LINE,
+            GL_LINES,
+            GL_SCISSOR_TEST,
+            GL_TEXTURE0,
+            GL_TEXTURE_2D,
+            GL_TRIANGLES,
+            glActiveTexture,
+            glBindTexture,
+            glBindVertexArray,
+            glClear,
+            glClearColor,
+            glColorMask,
+            glDepthMask,
+            glDisable,
+            glDrawArrays,
+            glEnable,
+            glGetUniformLocation,
+            glPolygonMode,
+            glUniform1i,
+            glUniformMatrix4fv,
+            glUseProgram,
+        )
         # QPainter changes GL state for its text overlay. Restore opaque mesh
         # rendering each frame so lookup colors retain their exact endpoints.
         glDisable(GL_BLEND)
