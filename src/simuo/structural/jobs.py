@@ -67,16 +67,28 @@ class BackgroundJob:
             return []
         messages = []
         complete = False
-        while self.connection.poll():
+        connection_closed = False
+        while True:
             try:
+                if not self.connection.poll():
+                    break
                 kind, value = self.connection.recv()
-            except EOFError:
+            except (EOFError, OSError):
+                # On Windows, PeekNamedPipe raises BrokenPipeError once the
+                # worker has closed its end instead of reporting a readable
+                # EOF.  Treat both forms as a terminal connection state.
+                connection_closed = True
                 break
             if self.job_revision == self.revision:
                 messages.append((kind, value))
             complete |= kind in ("result", "error")
         if complete:
             self.cancel()
+        elif connection_closed:
+            current = self.job_revision == self.revision
+            self.cancel()
+            if current:
+                messages.append(("error", "Analysis worker exited unexpectedly"))
         elif not self.process.is_alive():
             self.cancel()
             messages.append(("error", "Analysis worker exited unexpectedly"))
