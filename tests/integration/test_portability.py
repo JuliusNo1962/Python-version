@@ -78,9 +78,9 @@ class PortabilityTests(unittest.TestCase):
         for project in projects:
             document = read_project(project)
             if document.project_type == "scene":
-                references = [item["meshPath"] for item in document.data["objects"]]
+                references = tuple(item["meshPath"] for item in document.data["objects"])
             else:
-                references = [document.data["setup"]["geometry_path"]]
+                references = (document.data["setup"]["geometry_path"],)
             for reference in references:
                 with self.subTest(project=project.name, reference=reference):
                     self.assertFalse(Path(reference).is_absolute())

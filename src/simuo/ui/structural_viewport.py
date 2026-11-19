@@ -3,20 +3,29 @@ import math
 
 import glm
 import numpy as np
-from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QElapsedTimer, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QColor,
     QLinearGradient,
     QMatrix4x4,
     QPainter,
     QPen,
+    QPolygonF,
     QVector3D,
 )
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtWidgets import QWidget
 
 from simuo.rendering.camera import Camera
-from simuo.structural.postprocessing import gradient_texture
+from simuo.rendering.camera_controller import CameraController
+from simuo.structural.load_regions import area_region
+from simuo.structural.postprocessing import (
+    STRESS_COLORS,
+    deformed_points,
+    gradient_texture,
+    normalized_field,
+    stress_scale,
+)
 
 VERTEX = """
 #version 330 core
@@ -64,32 +73,48 @@ class StructuralViewport(QOpenGLWidget):
     support_picked = Signal(str)
     placement_cancelled = Signal()
     frame_requested = Signal()
+    deformation_changed = Signal(bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMinimumSize(400, 320)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        from simuo.ui.camera_keys import VerticalNavigationFilter
-        self.vertical_navigation = VerticalNavigationFilter(self)
         self.setMouseTracking(True)
         self.camera = Camera()
         self.camera.near_plane = .01
         self.camera.far_plane = 100.
         self.tool = "select"
-        self.keys = set()
+        self.camera_controller = CameraController(self, move_speed=.035/.016)
+        self.keys = self.camera_controller.keys
         self.right_mouse = False
         self.point_loads = ()
         self.point_supports = ()
         self.pinned_faces = set()
         self.selected_support = None
-        self.display_maximum = None
+        self.stress_mode = "yield"
+        self.stress_material = None
+        self.custom_stress_maximum = 1e6
+        self.stress_scale_label = "Material yield"
+        self.load_preview = None
+        self.preview_factor = 1.
+        self.deformation_enabled = False
+        self.deformation_mode = "auto"
+        self.custom_deformation_scale = 1.
+        self.deformation_scale = 1.
+        self.peak_displacement = 0.
+        self._deformation_cache = None
         self.saturated = 0
         self.surface_loads = ()
+        self.area_loads = ()
+        self.draft_area_load = None
+        self._area_region_cache = {}
         self.draft_surface_load = None
         self.selected_load = None
         self.draft_point = self.hover_point = None
         self.preview_force = (0., 0., 0.)
         self.tool_rail = self.tool_context = None
+        self.navigation_clock = QElapsedTimer()
+        self.navigation_clock.start()
         self.navigation = QTimer(self)
         self.navigation.timeout.connect(self.navigate)
         self.navigation.start(16)
@@ -106,18 +131,60 @@ class StructuralViewport(QOpenGLWidget):
         self.maximum = 0.
         self.triangles = np.empty((0, 3, 3))
         self.triangle_patch = np.empty(0, dtype=int)
-        self.line_count = 0
         self.overlay = StructuralOverlay(self)
         self.overlay.setGeometry(self.rect())
         self.frame_all()
 
     def set_data(self, geometry, patches, mesh=None, result=None):
+        changed = geometry is not self.geometry or mesh is not self.mesh or result is not self.result
+        if geometry is not self.geometry:
+            self._area_region_cache.clear()
         self.geometry, self.patches, self.mesh, self.result = geometry, patches, mesh, result
+        if changed:
+            self.set_deformation(False)
+        self.update_stress_scale()
         self.refresh()
 
+    def update_stress_scale(self):
+        values = self.result.averaged_von_mises if self.result is not None else np.zeros(0)
+        self.maximum, self.stress_scale_label = stress_scale(values, self.stress_mode, self.stress_material, self.custom_stress_maximum)
+        self.saturated = int(np.count_nonzero(values > self.maximum))
+
+    def area_region(self, load):
+        key = (id(self.geometry), load)
+        if key not in self._area_region_cache:
+            if len(self._area_region_cache) > 64:
+                self._area_region_cache.clear()
+            self._area_region_cache[key] = area_region(self.geometry.points, self.geometry.triangles, load)
+        return self._area_region_cache[key]
+
     def refresh(self):
+        self._deformation_cache = None
         self.dirty = True
         self.update()
+
+    def set_deformation(self, enabled):
+        enabled = bool(enabled and self.geometry is not None and self.mesh is not None and self.result is not None and self.display != "Setup")
+        if enabled != self.deformation_enabled:
+            self.deformation_enabled = enabled
+            self.refresh()
+            self.deformation_changed.emit(enabled)
+
+    def display_points(self):
+        if self.load_preview is not None:
+            scale = self.custom_deformation_scale if self.deformation_mode == "custom" else 1.
+            self.deformation_scale = scale
+            self.peak_displacement = float(np.linalg.norm(self.result.solution.reshape(-1,3),axis=1).max())
+            return self.result.dof_points+scale*self.result.solution.reshape(-1,3)
+        if self.display != "Setup" and self.mesh is not None:
+            if self.deformation_enabled:
+                if self._deformation_cache is None:
+                    displayed, self.deformation_scale, self.peak_displacement = deformed_points(
+                        self.mesh.points, self.result.displacement, self.deformation_mode, self.custom_deformation_scale)
+                    self._deformation_cache = displayed
+                return self._deformation_cache
+            return self.mesh.points
+        return self.geometry.points if self.geometry is not None else np.empty((0, 3))
 
     def initializeGL(self):
         from OpenGL.GL import (
@@ -180,17 +247,20 @@ class StructuralViewport(QOpenGLWidget):
         return projection*view
 
     def set_tool(self, tool):
+        if tool != "select":
+            self.set_deformation(False)
         self.tool = tool
         self.hover_point = None
-        self.setCursor(Qt.CursorShape.CrossCursor if tool in ("point", "fixed_point") else Qt.CursorShape.ArrowCursor)
+        self.setCursor(Qt.CursorShape.CrossCursor if tool in ("point", "area", "fixed_point") else Qt.CursorShape.ArrowCursor)
         self.update()
 
     def frame_all(self):
+        if self.deformation_enabled:
+            self.camera.frame_points(self.normalized(self.display_points()), max(1, self.width())/max(1, self.height()))
+            self.update()
+            return
         self.camera.position = glm.vec3(2.2, 1.5, 3.)
-        direction = glm.normalize(-self.camera.position)
-        self.camera.yaw = math.degrees(math.atan2(direction.z, direction.x))
-        self.camera.pitch = math.degrees(math.asin(direction.y))
-        self.camera.update_vectors()
+        self.camera.look_at((0., 0., 0.))
         self.update()
 
     def normalized(self, points):
@@ -227,17 +297,13 @@ class StructuralViewport(QOpenGLWidget):
         super().resizeEvent(event)
         self.layout_tools()
 
-    def navigate(self):
-        if not self.keys or not self.hasFocus():
+    def navigate(self, delta_time=None):
+        seconds = self.navigation_clock.nsecsElapsed()/1e9 if delta_time is None else delta_time
+        self.navigation_clock.restart()
+        if not self.hasFocus():
             return
-        delta = glm.vec3(0.)
-        for key, vector in ((Qt.Key.Key_W, self.camera.front), (Qt.Key.Key_S, -self.camera.front),
-                            (Qt.Key.Key_D, self.camera.right), (Qt.Key.Key_A, -self.camera.right),
-                            (Qt.Key.Key_Space, self.camera.world_up), (Qt.Key.Key_Alt, -self.camera.world_up)):
-            if key in self.keys:
-                delta += vector
-        self.camera.position += delta*.035
-        self.update()
+        if self.camera_controller.advance(seconds):
+            self.update()
 
     def upload(self):
         import ctypes
@@ -254,14 +320,16 @@ class StructuralViewport(QOpenGLWidget):
         )
         if self.geometry is None:
             self.draw_count = 0
-            self.line_count = 0
             self.triangles = np.empty((0, 3, 3))
             return
         g = self.geometry
         center = (g.points.min(axis=0)+g.points.max(axis=0))/2
         radius = max(np.linalg.norm(g.dimensions)/2, 1e-12)
-        if self.display != "Setup" and self.mesh is not None:
-            triangles = self.mesh.points[self.mesh.boundary_triangles]
+        if self.load_preview is not None:
+            triangles = self.display_points()[self.load_preview.triangles]
+            triangle_patch = self.load_preview.patches
+        elif self.display != "Setup" and self.mesh is not None:
+            triangles = self.display_points()[self.mesh.boundary_triangles]
             triangle_patch = self.mesh.boundary_patch
         else:
             triangles = g.points[g.triangles]
@@ -285,29 +353,27 @@ class StructuralViewport(QOpenGLWidget):
             if color:
                 colors[triangle_patch == i] = color
         values = np.zeros((len(triangles), 3))
-        self.maximum = 0.
         if self.display == "Stress" and self.result is not None and self.mesh is not None:
             raw = self.result.averaged_von_mises
-            self.maximum = self.display_maximum or float(raw.max())
-            field = np.clip(raw/max(self.maximum, 1e-30), 0., 1.)
-            self.saturated = int(np.count_nonzero(raw > self.maximum))
-            values = field[self.mesh.boundary_triangles]
+            self.update_stress_scale()
+            field = normalized_field(raw, self.maximum)[0] if self.maximum > 0 else np.zeros_like(raw)
+            if self.load_preview is not None:
+                from simuo.structural.postprocessing import von_mises
+                tensors = (self.load_preview.projection@self.result.averaged_stress.reshape(-1,9)).reshape(-1,3,3)
+                raw = von_mises(tensors)
+                field = normalized_field(raw,self.maximum)[0] if self.maximum>0 else np.zeros_like(raw)
+                values = field[self.load_preview.triangles]
+            else:
+                values = field[self.mesh.boundary_triangles]
         data = np.concatenate((self.triangles, colors, values[:, :, None]), axis=2).astype(np.float32)
-        line_data = []
-        floor = float(self.normalized(g.points).min(axis=0)[1])
-        for value in np.linspace(-2, 2, 17):
-            for point in ((value, floor, -2), (value, floor, 2), (-2, floor, value), (2, floor, value)):
-                line_data.append((*point, .20, .20, .20, 0.))
-        self.line_count = len(line_data)
-        triangles_data = data.reshape(-1, 7)
-        data = np.vstack((triangles_data, np.asarray(line_data, dtype=np.float32)))
+        data = data.reshape(-1, 7)
         glBindVertexArray(self.vao)
         glBindBuffer(GL_ARRAY_BUFFER, self.vbo)
         glBufferData(GL_ARRAY_BUFFER, data.nbytes, data, GL_STATIC_DRAW)
         for location, count, offset in ((0, 3, 0), (1, 3, 12), (2, 1, 24)):
             glEnableVertexAttribArray(location)
             glVertexAttribPointer(location, count, GL_FLOAT, False, 28, ctypes.c_void_p(offset))
-        self.draw_count = len(triangles_data)
+        self.draw_count = len(data)
 
     def paintGL(self):
         from OpenGL.GL import (
@@ -318,7 +384,6 @@ class StructuralViewport(QOpenGLWidget):
             GL_FILL,
             GL_FRONT_AND_BACK,
             GL_LINE,
-            GL_LINES,
             GL_SCISSOR_TEST,
             GL_TEXTURE0,
             GL_TEXTURE_2D,
@@ -360,7 +425,6 @@ class StructuralViewport(QOpenGLWidget):
             glActiveTexture(GL_TEXTURE0)
             glBindTexture(GL_TEXTURE_2D, self.texture)
             glBindVertexArray(self.vao)
-            glDrawArrays(GL_LINES, self.draw_count, self.line_count)
             glUniform1i(glGetUniformLocation(self.program, "show_stress"), self.display == "Stress" and self.result is not None)
             glPolygonMode(GL_FRONT_AND_BACK, GL_LINE if self.display == "Mesh" else GL_FILL)
             glDrawArrays(GL_TRIANGLES, 0, self.draw_count)
@@ -371,19 +435,33 @@ class StructuralViewport(QOpenGLWidget):
         self.overlay.update()
 
     def paint_overlay(self, painter):
+        inset = max(14, self.tool_rail.geometry().right()+12) if self.tool_rail is not None and self.tool_rail.isVisible() else 14
         painter.setPen(QColor("white"))
-        painter.drawText(14, self.height()-10, "Left-click selects · Ctrl adds faces · Right-drag looks · WASD moves · Space/Alt up/down · F frames")
+        controls = "Inspection only · Right-drag looks · WASD moves · Space/Alt up/down · F frames" if self.deformation_enabled else "Left-click selects · Ctrl adds faces · Right-drag looks · WASD moves · Space/Alt up/down · F frames"
+        painter.drawText(inset, self.height()-10, controls)
         self.paint_loads(painter)
         painter.setPen(QColor("white"))
+        if self.deformation_enabled:
+            y = self.tool_context.geometry().bottom()+20 if self.tool_context is not None else 24
+            painter.drawText(inset, y, f"Deformation: {self.deformation_scale:.6g}× (visual magnification)")
+            painter.drawText(inset, y+18, f"Peak displacement: {self.peak_displacement:.6g} m · elastic preview")
+            if self.load_preview is not None:
+                painter.drawText(inset,y+36,f"Load preview: {self.preview_factor:.6g}× analyzed load · preview only")
+                limits = self.load_preview.strength_limits
+                if limits['yield'] is not None and self.preview_factor >= limits['yield']:
+                    painter.drawText(inset,y+54,"Elastic extrapolation beyond yield")
+                if limits['uts'] is not None and self.preview_factor >= limits['uts']:
+                    painter.drawText(inset,y+72,"UTS reference reached — fracture is not simulated")
         if self.display == "Stress" and self.result is not None:
-            x, y = 20, self.height()-85
+            x, y = max(20, inset), self.height()-100
             gradient = QLinearGradient(x, y, x+250, y)
-            for position, color in ((0., "#00ff00"), (.5, "#ffff00"), (1., "#ff0000")):
-                gradient.setColorAt(position, QColor(color))
+            for position, color in STRESS_COLORS:
+                gradient.setColorAt(position, QColor.fromRgbF(*color))
             painter.fillRect(QRectF(x, y, 250, 16), gradient)
-            painter.drawText(x, y-9, "Averaged von Mises stress (Pa)")
-            painter.drawText(x, y+33, f"0              {self.maximum/2:.4g}              {self.maximum:.4g}{' + saturated' if self.saturated else ''}")
-            painter.drawText(x, y+52, f"Unaveraged peak: {self.result.von_mises.max():.6g} Pa")
+            painter.drawText(x, y-24, self.stress_scale_label)
+            painter.drawText(x, y-9, "Averaged von Mises stress (MPa)")
+            painter.drawText(x, y+33, f"0              {self.maximum/2e6:.4g}              {self.maximum/1e6:.4g}{' + saturated' if self.saturated else ''}")
+            painter.drawText(x, y+52, f"Unaveraged peak: {self.result.von_mises.max()/1e6:.6g} MPa")
 
     def project_point(self, physical_point):
         return self.project_normalized(self.normalized(physical_point))
@@ -416,7 +494,16 @@ class StructuralViewport(QOpenGLWidget):
             painter.drawText(int(start[0])+8, int(start[1])-8, label)
 
     def paint_loads(self, painter):
-        if self.geometry is None:
+        if self.load_preview is not None:
+            points = self.display_points()
+            for identity,name,nodes,weights,direction in self.load_preview.anchors:
+                position = weights@points[nodes]
+                if identity == self.load_preview.load_id:
+                    direction = direction*self.preview_factor
+                if self.visible_point(position):
+                    self.arrow(painter,position,direction,"#ffad57" if np.any(direction) else "#68a4ff",name)
+            return
+        if self.geometry is None or self.deformation_enabled:
             return
         from simuo.structural.meshing import point_position
         for support in self.point_supports:
@@ -430,6 +517,25 @@ class StructuralViewport(QOpenGLWidget):
             point = point_position(self.geometry, load)
             if self.visible_point(point):
                 self.arrow(painter, point, load.force, "#f0bcc8" if load.identifier == self.selected_load else "#ffad57", load.name)
+        for load in (*self.area_loads, *((self.draft_area_load,) if self.draft_area_load is not None else ())):
+            if self.draft_area_load is not None and load.identifier == self.selected_load:
+                continue
+            try:
+                region = self.area_region(load)
+            except ValueError:
+                continue
+            color = "#78e4de" if load.identifier == "draft" else "#f0bcc8" if load.identifier == self.selected_load else "#ffad57"
+            painter.setPen(Qt.PenStyle.NoPen)
+            fill = QColor(color)
+            fill.setAlpha(85)
+            painter.setBrush(fill)
+            for triangle in region.triangles:
+                screen = [self.project_point(vertex) for vertex in triangle]
+                if all(point is not None for point in screen) and self.visible_point(triangle.mean(axis=0)):
+                    painter.drawPolygon(QPolygonF([QPointF(*point) for point in screen]))
+            if self.visible_point(region.center):
+                direction = load.value if load.kind == "force" else -load.value[0]*region.normal
+                self.arrow(painter, region.center, direction, color, load.name)
         if self.draft_point is not None:
             self.arrow(painter, self.draft_point, self.preview_force, "#78e4de", "Point force preview")
         elif self.hover_point is not None:
@@ -452,11 +558,11 @@ class StructuralViewport(QOpenGLWidget):
         screen = self.project_point(point)
         if screen is None:
             return False
-        hit = self.pick_surface(*screen)
+        hit = self.pick_surface(*screen, inspection=self.load_preview is not None)
         return hit is not None and np.linalg.norm(hit[2]-point) <= np.linalg.norm(self.geometry.dimensions)*2e-5
 
-    def pick_surface(self, x, y):
-        if self.geometry is None:
+    def pick_surface(self, x, y, *, inspection=False):
+        if self.geometry is None or ((self.deformation_enabled or self.load_preview is not None) and not inspection):
             return None
         inverse, valid = self.matrices().inverted()
         if not valid:
@@ -466,7 +572,7 @@ class StructuralViewport(QOpenGLWidget):
         a, b = (inverse.map(QVector3D(nx, ny, z)) for z in (-1., 1.))
         origin = np.array(a.toTuple())
         direction = np.array(b.toTuple())-origin
-        source = self.geometry.points[self.geometry.triangles]
+        source = self.display_points()[self.load_preview.triangles] if inspection and self.load_preview is not None else self.geometry.points[self.geometry.triangles]
         triangles = self.normalized(source)
         edge1, edge2 = triangles[:, 1]-triangles[:, 0], triangles[:, 2]-triangles[:, 0]
         h = np.cross(direction, edge2)
@@ -496,10 +602,10 @@ class StructuralViewport(QOpenGLWidget):
     def mouseMoveEvent(self, event):
         if self.right_mouse and self.last_mouse is not None:
             delta = event.position()-self.last_mouse
-            self.camera.rotate(delta.x(), -delta.y(), .25)
+            self.camera_controller.look(delta.x(), -delta.y())
             self.last_mouse = event.position()
             self.update()
-        elif self.tool in ("point", "fixed_point"):
+        elif self.tool in ("point", "area", "fixed_point"):
             hit = self.pick_surface(event.position().x(), event.position().y())
             self.hover_point = hit[2] if hit else None
             self.update()
@@ -507,13 +613,15 @@ class StructuralViewport(QOpenGLWidget):
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.RightButton:
             self.right_mouse = False
-            self.setCursor(Qt.CursorShape.CrossCursor if self.tool in ("point", "fixed_point") else Qt.CursorShape.ArrowCursor)
+            self.setCursor(Qt.CursorShape.CrossCursor if self.tool in ("point", "area", "fixed_point") else Qt.CursorShape.ArrowCursor)
             return
         if event.button() != Qt.MouseButton.LeftButton or self.last_mouse is None:
             return
         moved = (event.position()-self.press_mouse).manhattanLength()
         self.last_mouse = None
         if moved > 4:
+            return
+        if self.deformation_enabled:
             return
         if self.tool == "select" and self.geometry:
             from simuo.structural.meshing import point_position
@@ -523,7 +631,7 @@ class StructuralViewport(QOpenGLWidget):
                 if screen is not None and np.linalg.norm(screen-np.array(event.position().toTuple())) < 12 and self.visible_point(point):
                     self.support_picked.emit(support.identifier)
                     return
-            for load in reversed(self.point_loads):
+            for load in reversed((*self.point_loads, *self.area_loads)):
                 point = point_position(self.geometry, load)
                 screen = self.project_point(point)
                 if screen is not None and np.linalg.norm(screen-np.array(event.position().toTuple())) < 12 and self.visible_point(point):
@@ -533,35 +641,32 @@ class StructuralViewport(QOpenGLWidget):
         if hit is None:
             return
         index, bary, point = hit
-        if self.tool in ("point", "fixed_point"):
+        if self.tool in ("point", "area", "fixed_point"):
             self.point_picked.emit(index, bary)
         else:
             patch = next(i for i, item in enumerate(self.patches) if index in item.triangles)
             self.patch_clicked.emit(patch, bool(event.modifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.MetaModifier)))
 
     def wheelEvent(self, event):
-        self.camera.position += self.camera.front*(event.angleDelta().y()/120)*.15
+        self.camera_controller.dolly(event.angleDelta().y()/120)
         self.update()
 
     def keyPressEvent(self, event):
-        if event.key() in (Qt.Key.Key_Control, Qt.Key.Key_Meta, Qt.Key.Key_AltGr) or event.modifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.MetaModifier):
-            self.keys.clear()
-            event.ignore()
-        elif event.key() == Qt.Key.Key_Escape:
+        if self.camera_controller.key_press(event):
+            return
+        if event.key() == Qt.Key.Key_Escape:
             self.placement_cancelled.emit()
         elif event.key() == Qt.Key.Key_F:
             if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
                 self.frame_all()
             else:
                 self.frame_requested.emit()
-        elif event.key() in (Qt.Key.Key_W, Qt.Key.Key_A, Qt.Key.Key_S, Qt.Key.Key_D, Qt.Key.Key_Space, Qt.Key.Key_Alt):
-            self.keys.add(event.key())
         else:
             super().keyPressEvent(event)
 
     def keyReleaseEvent(self, event):
-        if not event.isAutoRepeat():
-            self.keys.discard(event.key())
+        if not self.camera_controller.key_release(event):
+            super().keyReleaseEvent(event)
 
     def focusOutEvent(self, event):
         self.keys.clear()
