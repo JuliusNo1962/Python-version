@@ -41,7 +41,7 @@ def run_smoke():
         job.start("mesh", geometry, settings)
         mesh = wait_for_job(job)
         ends = [tuple(i for i, triangle in enumerate(geometry.points[geometry.triangles]) if np.allclose(triangle[:, 0], x)) for x in (-.5, .5)]
-        setup = AnalysisSetup(str(path), geometry.fingerprint, "m", Material(2e11, 0.), settings,
+        setup = AnalysisSetup(geometry.path, geometry.fingerprint, "m", Material(2e11, 0.), settings,
                               (ends[0],), (SurfaceLoad(ends[1], "force", (1000., 0., 0.)),))
         job.start("solve", mesh, setup)
         result = wait_for_job(job)
