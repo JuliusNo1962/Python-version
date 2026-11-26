@@ -346,9 +346,11 @@ class StructuralWindow(QMainWindow):
         for spec in (
             PanelSpec("analysis_hierarchy", "Analysis Hierarchy", lambda: self.hierarchy_panel, default_width=330, default_height=220),
             PanelSpec("analysis_properties", "Properties", lambda: self.properties, default_width=330, default_height=340),
+            PanelSpec("debug", "Debug Menu", QWidget),
             PanelSpec("analysis_results", "Results", lambda: self.results_tabs, Qt.DockWidgetArea.BottomDockWidgetArea, default_height=180)):
             self.panel_manager.register_panel(spec)
         self.panel_manager.restore_layout()
+        self.panel_manager.docks["debug"].hide()
         self.panel_manager.docks["analysis_results"].hide()
         self.progress = QProgressBar()
         self.progress.setMaximumWidth(150)

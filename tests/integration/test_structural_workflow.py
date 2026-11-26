@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QVector3D
-from PySide6.QtWidgets import QApplication, QButtonGroup
+from PySide6.QtWidgets import QApplication, QButtonGroup, QWidget
 
 from tests.structural_helpers import native_box, end_selection
 from simuo.ui.startup import SimuOStartMenu
@@ -49,6 +49,30 @@ class StructuralWorkflowTests(unittest.TestCase):
 
     def choose(self, window, triangles):
         window.highlight_faces(triangles)
+
+    def test_debug_menu_dock_toggles_from_view_menu(self):
+        window = self.window()
+        dock = window.panel_manager.docks["debug"]
+        view_menu = next(
+            action.menu()
+            for action in window.menuBar().actions()
+            if action.text() == "View"
+        )
+        action = dock.toggleViewAction()
+
+        self.assertIn(action, view_menu.actions())
+        self.assertEqual(dock.windowTitle(), "Debug Menu")
+        self.assertIsInstance(dock.widget(), QWidget)
+        self.assertIsNone(dock.widget().layout())
+        self.assertTrue(dock.isHidden())
+
+        action.trigger()
+        self.assertFalse(dock.isHidden())
+        self.assertTrue(action.isChecked())
+
+        action.trigger()
+        self.assertTrue(dock.isHidden())
+        self.assertFalse(action.isChecked())
 
     def solved_bending_window(self):
         window = self.window()

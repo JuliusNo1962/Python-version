@@ -41,8 +41,9 @@ connected solid with static, isotropic, small-displacement linear elasticity.
 
 The hierarchy and Properties docks share the Scene editor's styling and controls.
 Results open in a bottom dock, with Summary and Beam Diagram tabs. View → Reset
-Layout restores the default arrangement. Each workspace keeps separate layout
-preferences. Setup edits support Undo/Redo, with one step per completed edit.
+Layout restores the default arrangement. View → Debug Menu opens an empty dock.
+Each workspace keeps separate layout preferences. Setup edits support Undo/Redo,
+with one step per completed edit.
 Select a load marker or hierarchy entry to edit, rename, reposition or delete it.
 
 Sources must be closed, orientable, nondegenerate manifold triangle surfaces.
