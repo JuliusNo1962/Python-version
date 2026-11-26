@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from tests import ROOT
-from PySide6.QtCore import QSettings
+from PySide6.QtCore import QCoreApplication, QEvent, QSettings
 from PySide6.QtWidgets import QApplication, QLabel, QToolButton, QWidget, QMessageBox
 from simuo.ui import recent_projects as recent
 from simuo.ui.startup import SimuOStartMenu
@@ -126,6 +126,7 @@ class RecentProjectsTests(unittest.TestCase):
             trash.assert_called_once_with(str(scene))
             self.assertEqual(recent.recent_projects(), [])
             self.assertTrue(card.isHidden())
+            QCoreApplication.sendPostedEvents(card, QEvent.Type.DeferredDelete)
         # All filesystem deletion was mocked; the test's actual fixture stays intact.
         self.assertTrue(scene.exists())
 
