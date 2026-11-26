@@ -42,11 +42,11 @@ class RecentProjectsTests(unittest.TestCase):
         recent.remember_project(scene)
         recent.remember_project(part)
         recent.remember_project(scene)
-        self.assertEqual(recent.recent_projects(), [str(scene), str(part)])
+        self.assertEqual(recent.recent_projects(), [str(scene.resolve()), str(part.resolve())])
         self.assertEqual(recent.project_summary(scene), ("demo", "Modified Nov 12, 2026", "Scene"))
         self.assertEqual(recent.project_summary(part), ("Wheel", "Modified Nov 12, 2026", "Part"))
         part.unlink()
-        self.assertEqual(recent.recent_projects(), [str(scene)])
+        self.assertEqual(recent.recent_projects(), [str(scene.resolve())])
 
     def test_capture_creates_preview_and_failure_preserves_previous_preview(self):
         scene = self.document("saved.simuO", {"objects": []})
@@ -63,7 +63,7 @@ class RecentProjectsTests(unittest.TestCase):
             with patch.object(viewport, "grab", side_effect=RuntimeError("unavailable")):
                 recent.record_saved_project(scene, viewport)
             self.assertEqual(target.read_bytes(), before)
-        self.assertEqual(recent.recent_projects(), [str(scene)])
+        self.assertEqual(recent.recent_projects(), [str(scene.resolve())])
 
     def test_cards_display_save_date_and_route_parts_to_part_editor(self):
         scene = self.document("demo.simuO", {"objects": []})
@@ -79,7 +79,7 @@ class RecentProjectsTests(unittest.TestCase):
         self.assertEqual(len(cards), 2)
         self.assertEqual(cards[0].findChild(QLabel, "recentProjectDescription").text(), "Modified Nov 12, 2026")
         cards[0].click()
-        on_part.assert_called_once_with(str(part))
+        on_part.assert_called_once_with(str(part.resolve()))
         on_scene.assert_not_called()
 
     def test_structural_projects_have_their_own_recent_label(self):
@@ -118,7 +118,7 @@ class RecentProjectsTests(unittest.TestCase):
         ), patch("simuo.ui.startup.QMessageBox.warning") as warning:
             menu._delete_recent_project(str(scene), card)
             warning.assert_called_once()
-            self.assertEqual(recent.recent_projects(), [str(scene)])
+            self.assertEqual(recent.recent_projects(), [str(scene.resolve())])
         with patch("simuo.ui.startup.QFile.moveToTrash", return_value=(True, "trash/path")) as trash, patch(
             "simuo.ui.startup.QMessageBox.question", return_value=QMessageBox.Yes
         ):
